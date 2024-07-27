@@ -258,6 +258,9 @@ size | description
      |   - 0xe2: C64 (6581) with PCM - 4 channels (UNAVAILABLE)
      |   - 0xf0: SID2 - 3 channels
      |   - 0xf1: 5E01 - 5 channels
+     |   - 0xf2: TraumaCo DupWave-8 - 4 channels
+     |   - 0xf3: TraumaCo DupWave-16 - 8 channels
+     |   - 0xf4: TraumaCo DupWave-32 - 16 channels
      |   - 0xfc: Pong - 1 channel
      |   - 0xfd: Dummy System - 8 channels
      |   - 0xfe: reserved for development

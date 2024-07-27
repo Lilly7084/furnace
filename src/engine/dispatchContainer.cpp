@@ -90,6 +90,7 @@
 #include "platform/nds.h"
 #include "platform/bifurcator.h"
 #include "platform/sid2.h"
+#include "platform/dupwave.h"
 #include "platform/dummy.h"
 #include "../ta-log.h"
 #include "song.h"
@@ -760,6 +761,9 @@ void DivDispatchContainer::init(DivSystem sys, DivEngine* eng, int chanCount, do
     case DIV_SYSTEM_SID2:
       dispatch=new DivPlatformSID2;
       break;
+    case DIV_SYSTEM_DUPWAVE_8:
+        dispatch = new DivPlatformDupwave;
+        break;
     case DIV_SYSTEM_DUMMY:
       dispatch=new DivPlatformDummy;
       break;

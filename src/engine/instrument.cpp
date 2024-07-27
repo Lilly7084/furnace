@@ -1137,6 +1137,8 @@ void DivInstrument::putInsData2(SafeWriter* w, bool fui, const DivSong* song, bo
         feature64=true;
         featureS2=true;
         break;
+      case DIV_INS_DUPWAVE:
+          break;
       case DIV_INS_MAX:
         break;
       case DIV_INS_NULL:

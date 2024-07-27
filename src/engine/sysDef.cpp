@@ -2144,6 +2144,15 @@ void DivEngine::registerSystems() {
     SID2PostEffectHandlerMap
   );
 
+  sysDefs[DIV_SYSTEM_DUPWAVE_8] = new DivSysDef(
+    _("Dupwave-8"), NULL, 0xf2, 0, 4, false, false, 0, false, 0, 0, 0,
+    _("part of a family of three fantasy chips created by traumatized edgeworth. this is the smallest one, with 4 channels."),
+    { _("Channel 1"), _("Channel 2"), _("Channel 3"), _("Channel 4") },
+    { "CH1", "CH2", "CH3", "CH4" },
+    {DIV_CH_PULSE, DIV_CH_PULSE, DIV_CH_PULSE, DIV_CH_PULSE},
+    {DIV_INS_DUPWAVE, DIV_INS_DUPWAVE, DIV_INS_DUPWAVE, DIV_INS_DUPWAVE}
+  );
+
   sysDefs[DIV_SYSTEM_DUMMY]=new DivSysDef(
     _("Dummy System"), NULL, 0xfd, 0, 8, false, true, 0, false, 0, 0, 0,
     _("this is a system designed for testing purposes."),
