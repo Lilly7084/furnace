@@ -24,184 +24,114 @@
 	regPool[(a)] = (v) & 0xff; \
 } while(0)
 
-// ??? needed for NOTE_PERIODIC
-#define CHIP_DIVIDER 32
+#define CLOCK_DIVIDER 4
+#define WAVE_DIVIDER 256
 
-// .wave:
-// bits 0-1 = waveform
-// bit 2 = double
-// bit 3 = mix
-
-const uint64_t WAVETABLES[4][4] = {
-	{
-		0b0000000000000000000000000000000000000000000000000000000000000000,
-		0b0000000000000000000000000000000000000000000000000000000000000000,
-		0b1111111111111111111111111111111111111111111111111111111111111111,
-		0b1111111111111111111111111111111111111111111111111111111111111111
-	},
-	{
-		0b0000000000000000000000000000000000000000000000000000000000000000,
-		0b1111111111111111111111111111111111111111111111111111111111111111,
-		0b0000000000000000000000000000000011111111111111111111111111111111,
-		0b0000000000000000000000000000000011111111111111111111111111111111
-	},
-	{
-		0b0000000000000000000000000000000011111111111111111111111111111111,
-		0b0000000000000000111111111111111100000000000000001111111111111111,
-		0b0000000000000000111111111111111100000000111111110000000011111111,
-		0b0000000000000000111111111111111100000000111111110000000011111111
-	},
-	{
-		0b0000000000000000111111111111111100000000111111110000000011111111,
-		0b0000000011111111000011110000111100000000111111110000111100001111,
-		0b0000000011111111000011110000111100001111001100110000111100110011,
-		0b0000000011111111000011110000111100001111001100110000111100110011
-	}
-};
-
-int wt_get_raw(int w, unsigned int idx) {
-	if (idx >= 256)
-		return 1;
-	return (WAVETABLES[w][idx >> 6] >> (0x3F - (idx & 0x3F))) & 1;
+// Un-skissued version of DivEngine::calcBaseFreq that doesn't do linear pitch
+// Tuning in Hz, value of A-4, nominally 440Hz
+// clock = sample rate in Hz
+// note = 0 for C-0, +1 for 1 semitone
+double expBaseFreq(double tuning, double clock, int note)
+{
+	double base = tuning * pow(2.0, (float)(note - 180) / 48.0);
+	double step = base * WAVE_DIVIDER / clock;
+	return step;
 }
 
-int wt_get(int w, unsigned int idx) {
-	if (w == 0b0111)
-		return (idx >= 32 && idx < 64) ? 2 : 0;
-	unsigned int idx2 = 0xFF - idx;
-	if (w & 0x4) {
-		idx <<= 1;
-		idx2 <<= 1;
-	}
-	short normal = wt_get_raw(w & 3, idx);
-	short flip = wt_get_raw(w & 3, idx2);
-	switch ((w >> 2) & 0x3)
-	{
-	case 0b00:
-	case 0b01:
-	default:
-		return normal * 2;
-	case 0b10:
-		return normal + flip;
-	case 0b11:
-		return normal + 1 - flip;
-	}
+void DivPlatformDupwave::Channel::init(unsigned int rate)
+{
+	this->rate = rate;
+	this->detune = 0;
+	this->_freq = 0.0;
+	this->_phase = 0.0;
+	this->step = 0;
 }
 
-// ==================== Chip interface ====================
+short DivPlatformDupwave::Channel::runStep()
+{
+	_phase += _freq;
+	if (_phase >= 1.0f) {
+		_phase -= 1.0f;
+		step = (step + 1) % 256;
+	}
 
-void DivPlatformDupwave::acquire(short** buf, size_t len) {
+	//float _amp = sinf(_phase * 2. * M_PI);
+	float _amp = (float)step / 255.0;
+	return _amp * outVol * 32.0;
+}
+
+void DivPlatformDupwave::Channel::finishBlock()
+{
+}
+
+// ==================== Furnace stuff ====================
+
+void DivPlatformDupwave::acquire(short** buf, size_t len)
+{
 	for (size_t h = 0; h < len; h++) { // h = sample index
 		short samp = 0;
 		for (int i = 0; i < 4; i++) { // i = channel index
-
-			clockDiv[i] += 16;
-			if (clockDiv[i] >= chan[i].freq) {
-				if (chan[i].freq > 0)
-					clockDiv[i] %= chan[i].freq;
-				else
-					clockDiv[i] = 0;
-				phaseCounter[i] = (phaseCounter[i] + 1) % 256;
-			}
-
-			if (isMuted[i] || !chan[i].active) {
-				oscBuf[i]->data[oscBuf[i]->needle++] = 0;
-				continue;
-			}
-
-			short voice = wt_get(chan[i].wave & 0xF, phaseCounter[i])
-				* chan[i].outVol * 768;
-			oscBuf[i]->data[oscBuf[i]->needle++] = voice;
+			short voice = chan[i].runStep();
+			oscBuf[i]->data[oscBuf[i]->needle++] = voice * 8;
 			samp += voice;
 		}
 		buf[0][h] = samp;
 	}
+	for (int i = 0; i < 4; i++)
+		chan[i].finishBlock();
 }
 
-void DivPlatformDupwave::tick(bool sysTick) {
+void DivPlatformDupwave::tick(bool sysTick)
+{
 	for (int i = 0; i < 4; i++) {
 		chan[i].std.next();
 
-		if (chan[i].std.vol.had) {
-			chan[i].outVol = MIN(15, chan[i].std.vol.val);
-		}
-
-		if (NEW_ARP_STRAT) {
-			chan[i].handleArp();
-		}
-		else if (chan[i].std.arp.had) {
-			if (!chan[i].inPorta) {
-				chan[i].baseFreq = NOTE_PERIODIC(parent->calcArp(chan[i].note, chan[i].std.arp.val));
-			}
-			chan[i].freqChanged = true;
-		}
-		
-		if (chan[i].std.wave.had) {
-			chan[i].wave = (chan[i].wave & 0xC) | (chan[i].std.wave.val & 0x3);
-		}
-
-		if (chan[i].std.alg.had) {
-			chan[i].wave = (chan[i].wave & 0x3) | ((chan[i].std.alg.val << 2) & 0xC);
-		}
-
-		if (chan[i].freqChanged) {
-			// This thing was cargo-culted from the VIC20 core. I have no idea why it was there.
-			chan[i].freq = parent->calcFreq(
-				chan[i].baseFreq,
-				chan[i].pitch,
-				chan[i].fixedArp ? chan[i].baseNoteOverride : chan[i].arpOff,
-				chan[i].fixedArp,
-				true,
-				0,
-				chan[i].pitch2,
-				chipClock,
-				CHIP_DIVIDER);
-			// if (isMuted[i])
-			// 	chan[i].keyOn = false;
+		if (sysTick) {
+			chan[i].outVol = chan[i].active ? chan[i].vol : 0;
 		}
 	}
 }
 
-int DivPlatformDupwave::dispatch(DivCommand c) {
+int DivPlatformDupwave::dispatch(DivCommand c)
+{
+	auto& ch = chan[c.chan];
 	switch (c.cmd)
 	{
 	case DIV_CMD_NOTE_ON: {
-		DivInstrument* ins = parent->getIns(chan[c.chan].ins, DIV_INS_DUPWAVE);
+		DivInstrument* ins = parent->getIns(ch.ins, DIV_INS_DUPWAVE);
 		if (c.value != DIV_NOTE_NULL) {
-			chan[c.chan].baseFreq = NOTE_PERIODIC(c.value);
-			chan[c.chan].freqChanged = true;
-			chan[c.chan].note = c.value;
+			ch.freqChanged = true;
+			ch.note = c.value * 4 + 0; // TODO feed in detune
+			ch._freq = expBaseFreq(parent->song.tuning, rate, ch.note);
 		}
-		chan[c.chan].active = true;
-		chan[c.chan].macroInit(ins);
+		ch.active = true;
+		ch.macroInit(ins);
 		break;
 	}
 	case DIV_CMD_NOTE_OFF:
-		chan[c.chan].active = false;
-		chan[c.chan].macroInit(NULL);
+		ch.active = false;
+		ch.macroInit(NULL);
 		break;
 	case DIV_CMD_NOTE_OFF_ENV:
 	case DIV_CMD_ENV_RELEASE:
-		chan[c.chan].std.release();
+		ch.std.release();
 		break;
 	case DIV_CMD_INSTRUMENT:
-		if (chan[c.chan].ins != c.value || c.value2 == 1) {
-			chan[c.chan].ins = c.value;
+		if (ch.ins != c.value || c.value2 == 1) {
+			ch.ins = c.value;
 		}
 		break;
 	case DIV_CMD_VOLUME:
-		chan[c.chan].vol = c.value;
-		if (chan[c.chan].vol > 15)
-			chan[c.chan].vol = 15;
+		ch.vol = MIN(c.value, 15);
 		break;
 	case DIV_CMD_GET_VOLUME:
-		return chan[c.chan].vol;
+		return ch.vol;
 	case DIV_CMD_PITCH:
-		chan[c.chan].pitch = c.value;
-		chan[c.chan].freqChanged = true;
+		ch.pitch = c.value;
+		ch.freqChanged = true;
 		break;
 	case DIV_CMD_WAVE:
-		chan[c.chan].wave = c.value & 0x0F;
+		ch.wave = c.value & 0x0F;
 		break;
 		//DIV_CMD_NOTE_PORTA
 		//DIV_CMD_LEGATO
@@ -209,13 +139,13 @@ int DivPlatformDupwave::dispatch(DivCommand c) {
 	case DIV_CMD_GET_VOLMAX:
 		return 15;
 	case DIV_CMD_MACRO_OFF:
-		chan[c.chan].std.mask(c.value, true);
+		ch.std.mask(c.value, true);
 		break;
 	case DIV_CMD_MACRO_ON:
-		chan[c.chan].std.mask(c.value, false);
+		ch.std.mask(c.value, false);
 		break;
 	case DIV_CMD_MACRO_RESTART:
-		chan[c.chan].std.restart(c.value);
+		ch.std.restart(c.value);
 		break;
 	default:
 		break;
@@ -223,40 +153,30 @@ int DivPlatformDupwave::dispatch(DivCommand c) {
 	return 1;
 }
 
-void DivPlatformDupwave::muteChannel(int ch, bool mute) {
-	isMuted[ch] = mute;
-	if (chan[ch].onOff) {
-		if (mute) {
-			chan[ch].keyOff = true;
-		}
-		else if (chan[ch].active) {
-			chan[ch].keyOn = true;
-		}
-	}
-}
-
 // forceIns?
 
-void DivPlatformDupwave::reset() {
+void DivPlatformDupwave::reset()
+{
 	memset(regPool, 0, 8);
 	for (int i = 0; i < 4; i++) {
 		chan[i] = Channel();
 		chan[i].std.setEngine(parent);
-		clockDiv[i] = 0;
-		phaseCounter[i] = 0;
+		chan[i].init(rate);
 	}
 }
 
-void DivPlatformDupwave::setFlags(const DivConfig & flags) {
+void DivPlatformDupwave::setFlags(const DivConfig & flags)
+{
 	// I don't know what value this should be
-	chipClock = COLOR_NTSC * 2.0 / 7.0;
-	CHECK_CUSTOM_CLOCK; // Is this right?
-	rate = chipClock / 4;
+	chipClock = 2119040;
+	CHECK_CUSTOM_CLOCK;
+	rate = chipClock / CLOCK_DIVIDER;
 	for (int i = 0; i < 4; i++)
 		oscBuf[i]->rate = rate;
 }
 
-int DivPlatformDupwave::init(DivEngine * p, int channels, int sugRate, const DivConfig & flags) {
+int DivPlatformDupwave::init(DivEngine * p, int channels, int sugRate, const DivConfig & flags)
+{
 	// TODO: Additional setup
 	parent = p;
 	for (int i = 0; i < 4; i++) {
@@ -267,12 +187,6 @@ int DivPlatformDupwave::init(DivEngine * p, int channels, int sugRate, const Div
 	reset();
 	return 4;
 }
-
-// ==================== Furnace boilerplate ====================
-
-//
-// Constants, properties, metadata, whatever you call it idk
-//
 
 const char* regCheatSheetDupwave[] = {
 	"CH1Freq", "00",
@@ -286,61 +200,61 @@ const char* regCheatSheetDupwave[] = {
 	NULL
 };
 
-const char** DivPlatformDupwave::getRegisterSheet() {
-	return regCheatSheetDupwave;
-}
-
-bool DivPlatformDupwave::isVolGlobal() {
-	return true;
-}
-
-int DivPlatformDupwave::getRegisterPoolSize() {
-	return 8;
-}
-
-int DivPlatformDupwave::getOutputCount() {
-	return 1;
-}
-
-//
-// Getters and setters
-//
-
-void* DivPlatformDupwave::getChanState(int ch) {
-	return &chan[ch];
-}
-
-DivMacroInt* DivPlatformDupwave::getChanMacroInt(int ch) {
-	return &chan[ch].std;
-}
-
-DivDispatchOscBuffer* DivPlatformDupwave::getOscBuffer(int ch) {
-	return oscBuf[ch];
-}
-
-unsigned char* DivPlatformDupwave::getRegisterPool() {
-	return regPool;
-}
-
-//
-// Other stuff
-//
-
-void DivPlatformDupwave::poke(unsigned int addr, unsigned short val) {
-	rWrite(addr, val);
-}
-
-void DivPlatformDupwave::poke(std::vector<DivRegWrite>& wlist) {
-	for (DivRegWrite& i : wlist)
-		rWrite(i.addr, i.val);
-}
-
-void DivPlatformDupwave::notifyInsDeletion(void* ins) {
+void DivPlatformDupwave::notifyInsDeletion(void* ins)
+{
 	for (int i = 0; i < 4; i++)
 		chan[i].std.notifyInsDeletion((DivInstrument*)ins);
 }
 
-void DivPlatformDupwave::quit() {
+void DivPlatformDupwave::quit()
+{
 	for (int i = 0; i < 4; i++)
 		delete oscBuf[i];
+}
+
+// Getters and setters
+
+const char** DivPlatformDupwave::getRegisterSheet()
+{
+	return regCheatSheetDupwave;
+}
+
+bool DivPlatformDupwave::isVolGlobal()
+{
+	return true;
+}
+
+int DivPlatformDupwave::getRegisterPoolSize()
+{
+	return 8;
+}
+
+int DivPlatformDupwave::getOutputCount()
+{
+	return 1;
+}
+
+void* DivPlatformDupwave::getChanState(int ch)
+{
+	return &chan[ch];
+}
+
+DivMacroInt* DivPlatformDupwave::getChanMacroInt(int ch)
+{
+	return &chan[ch].std;
+}
+
+DivDispatchOscBuffer* DivPlatformDupwave::getOscBuffer(int ch)
+{
+	return oscBuf[ch];
+}
+
+unsigned char* DivPlatformDupwave::getRegisterPool()
+{
+	return regPool;
+}
+
+void DivPlatformDupwave::muteChannel(int ch, bool mute)
+{
+	isMuted[ch] = mute;
 }

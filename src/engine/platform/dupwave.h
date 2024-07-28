@@ -34,10 +34,17 @@ public:
             wave(0),
             waveWriteCycle(-1),
             onOff(true) {}
-    };
 
-    int clockDiv[4];
-    int phaseCounter[4];
+        void init(unsigned int rate);
+        short runStep();
+        void finishBlock();
+
+        unsigned int rate = 44100;
+        unsigned char detune = 0;
+        float _freq = 0.0;
+        float _phase = 0.0;
+        unsigned int step = 0;
+    };
 
     Channel chan[4];
     DivDispatchOscBuffer* oscBuf[4];
@@ -59,8 +66,6 @@ public:
     void setFlags(const DivConfig& flags);
     void notifyInsDeletion(void* ins);
     int getOutputCount();
-    void poke(unsigned int addr, unsigned short val);
-    void poke(std::vector<DivRegWrite>& wlist);
     const char** getRegisterSheet();
     int init(DivEngine* parent, int channels, int sugRate, const DivConfig& flags);
     void quit();
