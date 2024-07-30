@@ -62,9 +62,17 @@ int filter_get_base(int pos, int wav)
 // Un-skissued version of DivEngine::calcBaseFreq that doesn't do linear pitch
 // Tuning in Hz, value of A-4, nominally 440Hz
 // clock = sample rate in Hz
-// note = 0 for C-0, +1 for 1 semitone
+// note = 0 for C-0, +4 for 1 semitone
 double expBaseFreq(double tuning, double clock, int note)
 {
+#define MIN_NOTE (16 * 4)  // E-1
+#define MAX_NOTE (79 * 4 + 3) // C-6
+	// Constrain note value
+	if (note < MIN_NOTE)
+		note = MIN_NOTE;
+	if (note > MAX_NOTE)
+		note = MAX_NOTE;
+	// Actual frequency calculation
 	double base = tuning * pow(2.0, (float)(note - 180) / 48.0);
 	double step = base * WAVE_DIVIDER / clock;
 	return step;
@@ -86,11 +94,7 @@ short DivPlatformDupwave::Channel::runStep()
 		_phase -= 1.0f;
 		step = (step + 1) % 256;
 	}
-	return (float)filter_get_base(step, wave) * outVol * 32.0f;
-}
-
-void DivPlatformDupwave::Channel::finishBlock()
-{
+	return (float)filter_get_base(step, wave) * outVol * 96.0f;
 }
 
 // ==================== Furnace stuff ====================
@@ -106,8 +110,6 @@ void DivPlatformDupwave::acquire(short** buf, size_t len)
 		}
 		buf[0][h] = samp;
 	}
-	for (int i = 0; i < 4; i++)
-		chan[i].finishBlock();
 }
 
 void DivPlatformDupwave::tick(bool sysTick)
@@ -128,8 +130,26 @@ void DivPlatformDupwave::tick(bool sysTick)
 		if (ch.std.alg.had)
 			b32repl(ch.wave, ch.std.alg.val, 2, 2);
 
-		if (sysTick)
+		if (ch.std.pitch.had) {
+			ch.pitch = ch.std.pitch.val;
+			ch.freqChanged = true;
+		}
+
+		if (ch.std.arp.had)
+			ch.freqChanged = true;
+
+		if (sysTick) {
 			ch.outVol = ch.active ? ch.vol : 0;
+			rWrite(i * 2, ch.note); // CHxFreq
+			rWrite(i * 2 + 1, ch.wave << 4 | ch.outVol); // CHxWave
+		}
+
+		if (ch.freqChanged) {
+			ch.note = parent->calcArp(ch.baseNote, ch.std.arp.val, 0) << 2
+				| (MAX(ch.std.pitch.val, 0) >> 6) & 3; // Still no arpeggio
+			ch._freq = expBaseFreq(parent->song.tuning, rate, ch.note);
+			ch.freqChanged = false;
+		}
 	}
 }
 
@@ -142,7 +162,8 @@ int DivPlatformDupwave::dispatch(DivCommand c)
 		DivInstrument* ins = parent->getIns(ch.ins, DIV_INS_DUPWAVE);
 		if (c.value != DIV_NOTE_NULL) {
 			ch.freqChanged = true;
-			ch.note = c.value * 4 + 0; // TODO feed in detune
+			ch.baseNote = c.value;
+			ch.note = ch.baseNote << 2 | (MAX(ch.std.pitch.val, 0) >> 6) & 3;
 			ch._freq = expBaseFreq(parent->song.tuning, rate, ch.note);
 		}
 		ch.active = true;
@@ -209,7 +230,7 @@ void DivPlatformDupwave::reset()
 void DivPlatformDupwave::setFlags(const DivConfig & flags)
 {
 	// I don't know what value this should be
-	chipClock = 2119040;
+	chipClock = COLOR_NTSC;
 	CHECK_CUSTOM_CLOCK;
 	rate = chipClock / CLOCK_DIVIDER;
 	for (int i = 0; i < 4; i++)

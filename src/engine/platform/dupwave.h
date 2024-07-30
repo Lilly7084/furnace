@@ -37,8 +37,8 @@ public:
 
         void init(unsigned int rate);
         short runStep();
-        void finishBlock();
 
+        int baseNote = 0;
         unsigned int rate = 44100;
         unsigned char detune = 0;
         float _freq = 0.0;
