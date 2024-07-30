@@ -27,6 +27,38 @@
 #define CLOCK_DIVIDER 4
 #define WAVE_DIVIDER 256
 
+ // wav:
+ // bits 0-1: filter mode
+ // bit 2: double
+ // bit 3: mix
+int filter_get_base(int pos, int wav)
+{
+#define bit(x,n) (((x)>>(n))&1)
+	// Exception: Wave 0 + mix (0100, would be silent otherwise) is 12.5% pulse
+	if (wav == 0b1000)
+		return (pos >> 5) > 0;
+	unsigned char pos1 = pos, pos2 = pos ^ 0xFF; // Reversed for option with bit 3
+	// Double
+	if (wav & 4) {
+		pos1 = bit(pos1, 7) ? 0xFF : (pos1 << 1);
+		pos2 = bit(pos2, 7) ? 0xFF : (pos2 << 1);
+	}
+	// Filter modes
+	for (int i = 0; i < (wav & 3); i++) {
+		pos1 = bit(pos1, 7) ? (pos1 << 2) : (pos1 << 1);
+		pos2 = bit(pos2, 7) ? (pos2 << 2) : (pos2 << 1);
+	}
+	// Convert phase to square
+	pos1 = bit(pos1, 7);
+	pos2 = bit(pos2, 7);
+	// Mix
+	if (wav & 8)
+		return (wav & 4) ? (pos1 + 1 - pos2) : (pos1 + pos2);
+	else
+		return pos1 << 1;
+#undef bit
+}
+
 // Un-skissued version of DivEngine::calcBaseFreq that doesn't do linear pitch
 // Tuning in Hz, value of A-4, nominally 440Hz
 // clock = sample rate in Hz
@@ -54,10 +86,7 @@ short DivPlatformDupwave::Channel::runStep()
 		_phase -= 1.0f;
 		step = (step + 1) % 256;
 	}
-
-	//float _amp = sinf(_phase * 2. * M_PI);
-	float _amp = (float)step / 255.0;
-	return _amp * outVol * 32.0;
+	return (float)filter_get_base(step, wave) * outVol * 32.0f;
 }
 
 void DivPlatformDupwave::Channel::finishBlock()
@@ -83,12 +112,24 @@ void DivPlatformDupwave::acquire(short** buf, size_t len)
 
 void DivPlatformDupwave::tick(bool sysTick)
 {
-	for (int i = 0; i < 4; i++) {
-		chan[i].std.next();
+#define b32repl(x,y,off,len) do { \
+	int m = (1 << len) - 1; \
+	x &= ~(m << off); \
+	x |= (y & m) << off; \
+} while(0)
 
-		if (sysTick) {
-			chan[i].outVol = chan[i].active ? chan[i].vol : 0;
-		}
+	for (int i = 0; i < 4; i++) {
+		auto& ch = chan[i];
+		ch.std.next();
+
+		if (ch.std.wave.had)
+			b32repl(ch.wave, ch.std.wave.val, 0, 2);
+
+		if (ch.std.alg.had)
+			b32repl(ch.wave, ch.std.alg.val, 2, 2);
+
+		if (sysTick)
+			ch.outVol = ch.active ? ch.vol : 0;
 	}
 }
 
